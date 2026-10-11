@@ -1,0 +1,5 @@
+# Podman-specific override: keep-id maps the container's jenkins user (uid 1000) to the host
+# user running rootless Podman, so report files on the host are owned by you instead of a sub-uid.
+services:
+  jenkins:
+    userns_mode: "keep-id:uid=1000,gid=1000"

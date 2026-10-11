@@ -1,0 +1,36 @@
+// Injected by scan.sh: enables dependency locking for every project so that
+// `argusResolveAndLockAll --write-locks` produces gradle.lockfile files Trivy can read.
+// With -Dargus.classpathFile=<path>, compile classpaths are also appended there (one entry per line) for PMD.
+def classpathFile = System.getProperty('argus.classpathFile')
+
+allprojects { p ->
+    p.dependencyLocking { lockAllConfigurations() }
+
+    def configure = { t ->
+        t.doLast {
+            p.configurations.findAll { it.canBeResolved }.each { c ->
+                try {
+                    c.resolve()
+                } catch (Exception e) {
+                    p.logger.warn("argus: could not resolve ${p.path}:${c.name} (${e.message})")
+                }
+            }
+            def compile = p.configurations.findByName('compileClasspath')
+            if (classpathFile && compile) {
+                try {
+                    def files = compile.incoming.artifactView { lenient(true) }.files.files
+                    new File(classpathFile) << files.collect { it.absolutePath }.join('\n') + '\n'
+                } catch (Exception e) {
+                    p.logger.warn("argus: could not export classpath of ${p.path} (${e.message})")
+                }
+            }
+        }
+    }
+
+    try {
+        p.tasks.register('argusResolveAndLockAll', configure)
+    } catch (MissingMethodException ignored) {
+        // Gradle < 4.9 has no lazy task registration.
+        configure(p.tasks.create('argusResolveAndLockAll'))
+    }
+}

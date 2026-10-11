@@ -1,0 +1,17 @@
+jenkins:
+  systemMessage: "Argus temporary scan server"
+  numExecutors: 2
+  mode: NORMAL
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_ID:-admin}"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  crumbIssuer: "standard"
+unclassified:
+  location:
+    url: "${JENKINS_PUBLIC_URL:-http://localhost:8080/}"

@@ -1,0 +1,86 @@
+# Temporary Jenkins image for Argus scans.
+# All scanners run on the built-in node so the stack needs no nested containers.
+# Every download is pinned to an exact version and verified with a checksum.
+FROM docker.io/jenkins/jenkins:2.580.1-lts-jdk21
+
+ARG GITLEAKS_VERSION=8.30.1
+ARG TRIVY_VERSION=0.75.0
+ARG PMD_VERSION=7.28.0
+# PMD publishes no checksum file; this is the SHA-256 of the GitHub release asset taken when pinning.
+ARG PMD_SHA256=f974ba571f7bc01c73fffe11bade25fbc1f438698f9e9c00e416e8d65e9fbac2
+ARG MAVEN_VERSION=3.9.9
+ARG MAVEN_SHA512=a555254d6b53d267965a3404ecb14e53c3827c09c3b94b5678835887ab404556bfaf78dcfe03ba76fa2508649dca8531c74bca4d5846513522404d48e8c4ac8b
+# Eclipse Temurin JDKs used to run old and new Gradle builds.
+ARG JDK8_RELEASE=jdk8u504-b01
+ARG JDK8_FILE_VERSION=8u504b01
+ARG JDK8_SHA256_X64=9c70e102f527ac674ac2fe9c7d47b9a04e2d19842ba5ab8e9b33f368bbadfaea
+ARG JDK8_SHA256_AARCH64=57b7ed8af9d48542bb49ff7894448040b17bea0a48b41677d11ecaec6129768d
+ARG JDK17_RELEASE=jdk-17.0.20.1+1
+ARG JDK17_FILE_VERSION=17.0.20.1_1
+ARG JDK17_SHA256_X64=3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e
+ARG JDK17_SHA256_AARCH64=457b57af8f9c93ec39080bb8c764f559dc8c89a6da1a39d718a400b7890d3e41
+ARG TARGETARCH=amd64
+
+USER root
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-venv unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) GL_ARCH=x64;   TRIVY_ARCH=64bit; JDK_ARCH=x64; \
+             JDK8_SHA256="${JDK8_SHA256_X64}"; JDK17_SHA256="${JDK17_SHA256_X64}" ;; \
+      arm64) GL_ARCH=arm64; TRIVY_ARCH=ARM64; JDK_ARCH=aarch64; \
+             JDK8_SHA256="${JDK8_SHA256_AARCH64}"; JDK17_SHA256="${JDK17_SHA256_AARCH64}" ;; \
+      *) echo "unsupported arch: ${TARGETARCH}"; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; cd "$tmp"; \
+    gl="gitleaks_${GITLEAKS_VERSION}_linux_${GL_ARCH}.tar.gz"; \
+    curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${gl}"; \
+    curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"; \
+    grep " ${gl}\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -; \
+    tar -xzf "${gl}" -C /usr/local/bin gitleaks; \
+    tv="trivy_${TRIVY_VERSION}_Linux-${TRIVY_ARCH}.tar.gz"; \
+    curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tv}"; \
+    curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"; \
+    grep " ${tv}\$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum -c -; \
+    tar -xzf "${tv}" -C /usr/local/bin trivy; \
+    curl -fsSL -o pmd.zip "https://github.com/pmd/pmd/releases/download/pmd_releases%2F${PMD_VERSION}/pmd-dist-${PMD_VERSION}-bin.zip"; \
+    echo "${PMD_SHA256}  pmd.zip" | sha256sum -c -; \
+    unzip -q pmd.zip -d /opt; \
+    ln -s "/opt/pmd-bin-${PMD_VERSION}/bin/pmd" /usr/local/bin/pmd; \
+    curl -fsSL -o maven.tar.gz "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; \
+    echo "${MAVEN_SHA512}  maven.tar.gz" | sha512sum -c -; \
+    tar -xzf maven.tar.gz -C /opt; \
+    ln -s "/opt/apache-maven-${MAVEN_VERSION}/bin/mvn" /usr/local/bin/mvn; \
+    jdk8_url="https://github.com/adoptium/temurin8-binaries/releases/download/${JDK8_RELEASE}/OpenJDK8U-jdk_${JDK_ARCH}_linux_hotspot_${JDK8_FILE_VERSION}.tar.gz"; \
+    jdk17_url="https://github.com/adoptium/temurin17-binaries/releases/download/$(echo "${JDK17_RELEASE}" | sed 's/+/%2B/')/OpenJDK17U-jdk_${JDK_ARCH}_linux_hotspot_${JDK17_FILE_VERSION}.tar.gz"; \
+    curl -fsSL -o jdk8.tar.gz "${jdk8_url}"; \
+    echo "${JDK8_SHA256}  jdk8.tar.gz" | sha256sum -c -; \
+    curl -fsSL -o jdk17.tar.gz "${jdk17_url}"; \
+    echo "${JDK17_SHA256}  jdk17.tar.gz" | sha256sum -c -; \
+    for v in 8 17; do \
+      mkdir -p "/opt/java/jdk${v}"; \
+      tar -xzf "jdk${v}.tar.gz" -C "/opt/java/jdk${v}" --strip-components=1; \
+    done; \
+    cd /; rm -rf "$tmp"
+
+# semgrep-requirements.txt is `pip freeze` of a working install, so transitive dependencies stay fixed too.
+COPY semgrep-requirements.txt /tmp/semgrep-requirements.txt
+RUN python3 -m venv /opt/semgrep \
+ && /opt/semgrep/bin/pip install --no-cache-dir -r /tmp/semgrep-requirements.txt \
+ && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep \
+ && rm /tmp/semgrep-requirements.txt
+
+USER jenkins
+
+COPY --chown=jenkins:jenkins plugins.txt /usr/share/jenkins/ref/plugins.txt
+RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
+
+# The .override suffix makes Jenkins refresh the script on every start.
+COPY --chown=jenkins:jenkins argus-scan-job.groovy /usr/share/jenkins/ref/init.groovy.d/argus-scan-job.groovy.override
+
+ENV TZ=Asia/Seoul \
+    JAVA_OPTS="-Djenkins.install.runSetupWizard=false" \
+    CASC_JENKINS_CONFIG=/opt/argus/casc.yaml

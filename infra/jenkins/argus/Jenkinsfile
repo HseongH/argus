@@ -16,7 +16,14 @@ pipeline {
                     currentBuild.description = "${params.APP_NAME} (${params.SOURCE_TYPE})"
 
                     int rc
-                    if (params.SOURCE_TYPE == 'git' && params.GIT_CREDENTIALS_ID?.trim()) {
+                    String url = params.GIT_URL?.trim() ?: ''
+                    boolean sshUrl = url.startsWith('ssh://') || (url ==~ /^[^\/:@]+@[^\/:]+:.*/)
+                    if (params.SOURCE_TYPE == 'git' && params.GIT_CREDENTIALS_ID?.trim() && sshUrl) {
+                        withCredentials([sshUserPrivateKey(credentialsId: params.GIT_CREDENTIALS_ID,
+                                keyFileVariable: 'GIT_SSH_KEY_FILE', passphraseVariable: 'GIT_SSH_PASSPHRASE')]) {
+                            rc = sh(script: '/opt/argus/scan.sh', returnStatus: true)
+                        }
+                    } else if (params.SOURCE_TYPE == 'git' && params.GIT_CREDENTIALS_ID?.trim()) {
                         withCredentials([usernamePassword(credentialsId: params.GIT_CREDENTIALS_ID,
                                 usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_TOKEN')]) {
                             rc = sh(script: '/opt/argus/scan.sh', returnStatus: true)

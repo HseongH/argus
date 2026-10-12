@@ -53,17 +53,33 @@ Jenkins 화면에서 `argus-scan` 잡의 **Build with Parameters**를 실행하�
 ./trigger-scan.sh my-app git https://github.com/org/my-app.git main
 ```
 
-비공개 저장소는 먼저 Jenkins에서 **Manage Jenkins > Credentials**에 `Username with password` 자격 증명을 만들고(비밀번호 칸에 토큰 입력), 그 ID를 다섯 번째 인자로 넘깁니다.
+비공개 저장소는 먼저 Jenkins의 **Manage Jenkins > Credentials > System > Global credentials**에 자격 증명을 만들고, 그 ID를 다섯 번째 인자로 넘깁니다. 주소 형식에 따라 맞는 종류의 자격 증명을 사용해야 합니다.
+
+| 주소 형식 | 자격 증명 종류 |
+| --- | --- |
+| `https://...` | `Username with password` (비밀번호 칸에 토큰 입력) |
+| `git@host:org/repo.git`, `ssh://...` | `SSH Username with private key` (passphrase 지원) |
 
 ```bash
 ./trigger-scan.sh my-app git https://github.com/org/my-app.git main my-git-token
+./trigger-scan.sh my-app git git@github.com:org/my-app.git main my-ssh-key
 ```
 
-로컬 소스는 `sources/` 아래에 복사하거나 `.env`의 `SOURCES_DIR`을 소스 디렉터리로 지정한 뒤 상대 경로로 실행합니다. 원본은 읽기 전용으로 마운트되며, 스캔은 복사본에서 진행됩니다.
+SSH 호스트 키는 처음 접속할 때 자동으로 신뢰하고 `jenkins_home` 볼륨의 `~/.ssh/known_hosts`에 기록합니다. 개인 사용자 영역(**User > Credentials**)에 만든 자격 증명은 잡에서 사용할 수 없습니다.
+
+로컬 소스는 `SOURCES_DIR`(기본값 `sources/`) 기준 상대 경로나 호스트의 절대 경로로 지정합니다. 원본은 변경되지 않으며, 스캔은 복사본에서 진행됩니다.
 
 ```bash
 ./trigger-scan.sh my-app local my-app
+./trigger-scan.sh my-app local /home/me/projects/my-app
 ```
+
+절대 경로는 다음과 같이 처리합니다.
+
+- `SOURCES_DIR` 안의 경로이면 상대 경로로 바꿔서 그대로 스캔합니다.
+- `SOURCES_DIR` 밖의 경로이면 컨테이너가 볼 수 있도록 `SOURCES_DIR/.argus-staging/` 아래로 복사합니다(`build`, `target`, `.gradle`, `node_modules` 제외). 이때 스크립트는 빌드가 끝날 때까지 기다린 뒤 복사본을 삭제하며, `manifest.json`에는 원래 경로를 기록합니다.
+
+Jenkins 화면에서 직접 실행할 때는 `LOCAL_PATH`에 `SOURCES_DIR` 기준 상대 경로만 사용할 수 있습니다. 컨테이너는 마운트된 `SOURCES_DIR`만 볼 수 있기 때문입니다.
 
 ## 잡 파라미터
 
@@ -72,8 +88,9 @@ Jenkins 화면에서 `argus-scan` 잡의 **Build with Parameters**를 실행하�
 | `APP_NAME` | 결과 폴더 이름입니다. 영문, 숫자, `.`, `_`, `-`만 사용할 수 있습니다. |
 | `SOURCE_TYPE` | `git` 또는 `local` |
 | `GIT_URL`, `GIT_REF` | clone할 주소와 브랜치/태그입니다. `GIT_REF`가 비어 있으면 기본 브랜치를 사용합니다. |
-| `GIT_CREDENTIALS_ID` | 비공개 저장소용 자격 증명 ID입니다. 토큰은 URL이나 로그에 남지 않습니다. |
-| `LOCAL_PATH` | `sources/` 기준 상대 경로입니다. |
+| `GIT_CREDENTIALS_ID` | 비공개 저장소용 자격 증명 ID입니다. HTTPS 주소는 토큰, SSH 주소는 SSH 키로 인증하며, 비밀 정보는 URL이나 로그에 남지 않습니다. |
+| `LOCAL_PATH` | `SOURCES_DIR` 기준 상대 경로입니다. |
+| `SOURCE_LABEL` | `manifest.json`에 기록할 원본 위치입니다. 비워 두면 `GIT_URL` 또는 `LOCAL_PATH`를 기록합니다. `trigger-scan.sh`가 절대 경로를 복사해서 스캔할 때 자동으로 채웁니다. |
 | `BUILD_JDK` | 의존성을 해석할 때 사용할 JDK입니다. `auto`는 Gradle 7.3 미만이면 8, 그 이상이면 17을 사용합니다. |
 
 ## 빌드 도구별 지원 범위

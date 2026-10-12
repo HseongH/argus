@@ -18,6 +18,7 @@ GIT_URL="${GIT_URL:-}"
 GIT_REF="${GIT_REF:-}"
 LOCAL_PATH="${LOCAL_PATH:-}"
 BUILD_JDK="${BUILD_JDK:-auto}"
+SOURCE_LABEL="${SOURCE_LABEL:-}"
 
 WORK="${WORKSPACE:-$(mktemp -d)}/argus-work"
 SRC="$WORK/src"
@@ -36,7 +37,7 @@ OUT="$REPORTS_ROOT/$APP_NAME/$STAMP"
 STARTED_AT="$(date -Iseconds)"
 
 rm -rf "$WORK"
-mkdir -p "$SRC" "$OUT"
+mkdir -p "$SRC"
 
 # ---------------------------------------------------------------- source
 SOURCE_DESC=""
@@ -57,10 +58,32 @@ esac
 EOF
         chmod 700 "$askpass"
     fi
+
+    local ssh_askpass=""
+    if [[ -n "${GIT_SSH_KEY_FILE:-}" ]]; then
+        # Key file comes from the Jenkins sshUserPrivateKey binding. Unknown hosts are trusted on first
+        # use and remembered in ~/.ssh/known_hosts (persisted in the jenkins_home volume).
+        mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+        local ssh_cmd="ssh -i '$GIT_SSH_KEY_FILE' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+        if [[ -n "${GIT_SSH_PASSPHRASE:-}" ]]; then
+            # BatchMode would suppress the passphrase prompt, so the askpass helper answers it instead.
+            ssh_askpass="$WORK/ssh-askpass.sh"
+            printf '#!/bin/sh\nprintf "%%s\\n" "$GIT_SSH_PASSPHRASE"\n' > "$ssh_askpass"
+            chmod 700 "$ssh_askpass"
+            export SSH_ASKPASS="$ssh_askpass" SSH_ASKPASS_REQUIRE=force
+        else
+            ssh_cmd+=" -o BatchMode=yes"
+        fi
+        export GIT_SSH_COMMAND="$ssh_cmd"
+    fi
+
     local args=(clone --depth 1 --quiet)
     [[ -n "$GIT_REF" ]] && args+=(--branch "$GIT_REF")
     GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$askpass" git -c credential.helper= "${args[@]}" "$GIT_URL" "$SRC"
-    [[ -n "$askpass" ]] && rm -f "$askpass"
+    local helper
+    for helper in "$askpass" "$ssh_askpass"; do
+        if [[ -n "$helper" ]]; then rm -f -- "$helper"; fi
+    done
     SOURCE_COMMIT="$(git -C "$SRC" rev-parse HEAD)"
     SOURCE_DESC="$GIT_URL${GIT_REF:+@$GIT_REF}"
 }
@@ -86,7 +109,11 @@ case "$SOURCE_TYPE" in
     local) fetch_local ;;
     *) die "unknown SOURCE_TYPE: $SOURCE_TYPE" ;;
 esac
+# trigger-scan.sh passes the original host path when it scans a staging copy.
+[[ -n "$SOURCE_LABEL" ]] && SOURCE_DESC="$SOURCE_LABEL"
 echo "source: $SOURCE_DESC ${SOURCE_COMMIT:+($SOURCE_COMMIT)}"
+# Created only after the source is ready, so a failed clone leaves no empty report folder.
+mkdir -p "$OUT"
 echo "output: $OUT"
 
 # All scanners run from the source root so that SARIF locations are relative paths.

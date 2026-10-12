@@ -1,0 +1,49 @@
+// Parameters are defined by init.groovy.d/argus-scan-job.groovy; they reach scan.sh as environment variables.
+pipeline {
+    agent any
+    options {
+        timestamps()
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '100'))
+    }
+    stages {
+        stage('Scan') {
+            steps {
+                script {
+                    if (!params.APP_NAME?.trim()) {
+                        error('APP_NAME 파라미터가 필요합니다.')
+                    }
+                    currentBuild.description = "${params.APP_NAME} (${params.SOURCE_TYPE})"
+
+                    int rc
+                    String url = params.GIT_URL?.trim() ?: ''
+                    boolean sshUrl = url.startsWith('ssh://') || (url ==~ /^[^\/:@]+@[^\/:]+:.*/)
+                    if (params.SOURCE_TYPE == 'git' && params.GIT_CREDENTIALS_ID?.trim() && sshUrl) {
+                        withCredentials([sshUserPrivateKey(credentialsId: params.GIT_CREDENTIALS_ID,
+                                keyFileVariable: 'GIT_SSH_KEY_FILE', passphraseVariable: 'GIT_SSH_PASSPHRASE')]) {
+                            rc = sh(script: '/opt/argus/scan.sh', returnStatus: true)
+                        }
+                    } else if (params.SOURCE_TYPE == 'git' && params.GIT_CREDENTIALS_ID?.trim()) {
+                        withCredentials([usernamePassword(credentialsId: params.GIT_CREDENTIALS_ID,
+                                usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_TOKEN')]) {
+                            rc = sh(script: '/opt/argus/scan.sh', returnStatus: true)
+                        }
+                    } else {
+                        rc = sh(script: '/opt/argus/scan.sh', returnStatus: true)
+                    }
+
+                    if (rc == 2) {
+                        unstable('일부 스캐너가 실패했습니다. 콘솔 로그와 manifest.json을 확인하세요.')
+                    } else if (rc != 0) {
+                        error("스캔이 실패했습니다. (exit code ${rc})")
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            deleteDir()
+        }
+    }
+}
